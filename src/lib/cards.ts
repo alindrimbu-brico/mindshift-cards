@@ -20,6 +20,15 @@ export type Card = {
   difficulty: string | null;
   status: string | null;
   is_free_top300: boolean | null;
+  unique_key: string | null;
+};
+
+export type SelectionDebug = {
+  lastShownCardId: string | null;
+  stage: string;
+  candidatesCount: number;
+  excludedCount: number;
+  selectedCardId: string | null;
 };
 
 export function getCurrentTimeBlock(): "AM" | "PM" | "SEARA" {
@@ -44,68 +53,136 @@ export function parseExerciseSteps(json: string | null): string[] {
   }
 }
 
-async function tryQuery(
+async function getExcludedCardIds(userId: string, days: number): Promise<string[]> {
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+  const { data } = await supabase
+    .from("deliveries")
+    .select("card_id")
+    .eq("user_id", userId)
+    .gte("delivered_at", since.toISOString());
+  return (data ?? []).map((d) => d.card_id);
+}
+
+async function pickRandom(
   filters: (q: any) => any,
+  excludeIds: string[],
   label: string
-): Promise<Card | null> {
-  const q1 = filters(supabase.from("cards").select("*", { count: "exact", head: true }));
+): Promise<{ card: Card | null; count: number }> {
+  // Get count
+  let q1 = filters(supabase.from("cards").select("*", { count: "exact", head: true }));
+  if (excludeIds.length > 0) q1 = q1.not("id", "in", `(${excludeIds.join(",")})`);
   const { count } = await q1;
   const total = count ?? 0;
-  console.log(`[getDailyCard] ${label}: ${total} cards`);
-  if (total === 0) return null;
+  console.log(`[getDailyCard] ${label}: ${total} candidates (excluded ${excludeIds.length})`);
+  if (total === 0) return { card: null, count: 0 };
+
   const offset = Math.floor(Math.random() * total);
-  const q2 = filters(supabase.from("cards").select("*"));
+  let q2 = filters(supabase.from("cards").select("*"));
+  if (excludeIds.length > 0) q2 = q2.not("id", "in", `(${excludeIds.join(",")})`);
   const { data } = await q2.range(offset, offset).limit(1);
-  return (data?.[0] as Card) ?? null;
+  return { card: (data?.[0] as Card) ?? null, count: total };
 }
 
 export async function getDailyCard(
   _isPremium: boolean,
   userId: string,
-  isCrisis = false
-): Promise<Card | null> {
+  isCrisis = false,
+  lastShownCardId: string | null = null
+): Promise<{ card: Card | null; debug: SelectionDebug }> {
   const block = getCurrentTimeBlock();
   const variant = isCrisis ? "CRISIS" : getPreferredVariant(block);
   const pack = isCrisis ? "CRISIS" : block;
 
-  // Soft 30-day repeat filter
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  const { data: recentDeliveries } = await supabase
-    .from("deliveries")
-    .select("card_id")
-    .eq("user_id", userId)
-    .gte("delivered_at", thirtyDaysAgo.toISOString());
-  const recentIds = (recentDeliveries ?? []).map((d) => d.card_id);
+  const debug: SelectionDebug = {
+    lastShownCardId,
+    stage: "",
+    candidatesCount: 0,
+    excludedCount: 0,
+    selectedCardId: null,
+  };
 
-  // Stage 1: pack + variant, exclude recent
-  let card = await tryQuery((q) => {
-    let r = q.eq("status", "published").eq("pack", pack).eq("card_variant", variant);
-    if (recentIds.length > 0) r = r.not("id", "in", `(${recentIds.join(",")})`);
-    return r;
-  }, `S1 pack=${pack} var=${variant} -recent`);
-  if (card) return card;
+  const excluded30 = await getExcludedCardIds(userId, 30);
+  const baseExclude = lastShownCardId ? [...excluded30, lastShownCardId] : excluded30;
+  debug.excludedCount = baseExclude.length;
 
-  // Stage 2: pack + variant, allow recent
-  card = await tryQuery((q) =>
-    q.eq("status", "published").eq("pack", pack).eq("card_variant", variant),
-    `S2 pack=${pack} var=${variant}`);
-  if (card) return card;
+  const published = (q: any) => q.eq("status", "published");
 
-  // Stage 3: variant only
-  card = await tryQuery((q) =>
-    q.eq("status", "published").eq("card_variant", variant),
-    `S3 var=${variant}`);
-  if (card) return card;
+  // Stage 1: pack + variant, exclude 30d
+  let result = await pickRandom(
+    (q: any) => published(q).eq("pack", pack).eq("card_variant", variant),
+    baseExclude,
+    `S1 pack=${pack} var=${variant} -30d`
+  );
+  if (result.card) {
+    debug.stage = "S1"; debug.candidatesCount = result.count; debug.selectedCardId = result.card.id;
+    console.log(`[getDailyCard] Selected ${result.card.id} at S1`);
+    return { card: result.card, debug };
+  }
 
-  // Stage 4: any published
-  card = await tryQuery((q) =>
-    q.eq("status", "published"),
-    `S4 any published`);
-  if (card) return card;
+  // Stage 2: variant only, exclude 30d
+  result = await pickRandom(
+    (q: any) => published(q).eq("card_variant", variant),
+    baseExclude,
+    `S2 var=${variant} -30d`
+  );
+  if (result.card) {
+    debug.stage = "S2"; debug.candidatesCount = result.count; debug.selectedCardId = result.card.id;
+    console.log(`[getDailyCard] Selected ${result.card.id} at S2`);
+    return { card: result.card, debug };
+  }
+
+  // Stage 3: pack + variant, exclude only 7d
+  const excluded7 = await getExcludedCardIds(userId, 7);
+  const shortExclude = lastShownCardId ? [...excluded7, lastShownCardId] : excluded7;
+
+  result = await pickRandom(
+    (q: any) => published(q).eq("pack", pack).eq("card_variant", variant),
+    shortExclude,
+    `S3 pack=${pack} var=${variant} -7d`
+  );
+  if (result.card) {
+    debug.stage = "S3"; debug.candidatesCount = result.count; debug.selectedCardId = result.card.id;
+    console.log(`[getDailyCard] Selected ${result.card.id} at S3`);
+    return { card: result.card, debug };
+  }
+
+  // Stage 4: any variant, exclude 7d
+  result = await pickRandom(
+    (q: any) => published(q),
+    shortExclude,
+    `S4 any -7d`
+  );
+  if (result.card) {
+    debug.stage = "S4"; debug.candidatesCount = result.count; debug.selectedCardId = result.card.id;
+    console.log(`[getDailyCard] Selected ${result.card.id} at S4`);
+    return { card: result.card, debug };
+  }
+
+  // Stage 5: any published, only exclude lastShown
+  const lastOnly = lastShownCardId ? [lastShownCardId] : [];
+  result = await pickRandom(
+    (q: any) => published(q),
+    lastOnly,
+    `S5 any published -lastShown`
+  );
+  if (result.card) {
+    debug.stage = "S5"; debug.candidatesCount = result.count; debug.selectedCardId = result.card.id;
+    console.log(`[getDailyCard] Selected ${result.card.id} at S5`);
+    return { card: result.card, debug };
+  }
+
+  // Stage 6: absolute fallback
+  result = await pickRandom((q: any) => published(q), [], `S6 absolute fallback`);
+  if (result.card) {
+    debug.stage = "S6"; debug.candidatesCount = result.count; debug.selectedCardId = result.card.id;
+    console.log(`[getDailyCard] Selected ${result.card.id} at S6`);
+    return { card: result.card, debug };
+  }
 
   console.warn("[getDailyCard] No cards at any stage!");
-  return null;
+  debug.stage = "NONE";
+  return { card: null, debug };
 }
 
 export async function recordDelivery(userId: string, cardId: string, action: string) {

@@ -36,6 +36,7 @@ export type Database = {
           tags_curated: string | null
           theme_title: string | null
           title: string
+          unique_key: string | null
         }
         Insert: {
           card_no_in_chapter?: number | null
@@ -58,6 +59,7 @@ export type Database = {
           tags_curated?: string | null
           theme_title?: string | null
           title: string
+          unique_key?: string | null
         }
         Update: {
           card_no_in_chapter?: number | null
@@ -80,6 +82,7 @@ export type Database = {
           tags_curated?: string | null
           theme_title?: string | null
           title?: string
+          unique_key?: string | null
         }
         Relationships: []
       }
