@@ -48,14 +48,14 @@ async function tryQuery(
   filters: (q: any) => any,
   label: string
 ): Promise<Card | null> {
-  const q1 = filters(supabase.from("cards"));
-  const { count } = await q1.select("*", { count: "exact", head: true });
+  const q1 = filters(supabase.from("cards").select("*", { count: "exact", head: true }));
+  const { count } = await q1;
   const total = count ?? 0;
   console.log(`[getDailyCard] ${label}: ${total} cards`);
   if (total === 0) return null;
   const offset = Math.floor(Math.random() * total);
-  const q2 = filters(supabase.from("cards"));
-  const { data } = await q2.select("*").range(offset, offset).limit(1);
+  const q2 = filters(supabase.from("cards").select("*"));
+  const { data } = await q2.range(offset, offset).limit(1);
   return (data?.[0] as Card) ?? null;
 }
 
