@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useAuth } from "@/lib/auth";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Card as CardType,
+  SelectionDebug,
   getDailyCard,
   parseExerciseSteps,
   recordDelivery,
@@ -11,9 +12,9 @@ import {
   getCurrentTimeBlock,
 } from "@/lib/cards";
 import { toast } from "sonner";
-import { Check, Heart, X, SkipForward, Flame, AlertTriangle, BookOpen, Settings, RefreshCw } from "lucide-react";
+import { Check, Heart, X, SkipForward, Flame, AlertTriangle, RefreshCw, Bug } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import BottomNav from "@/components/BottomNav";
 
 const Home = () => {
@@ -25,20 +26,27 @@ const Home = () => {
   const [streak, setStreak] = useState(0);
   const [isPremium, setIsPremium] = useState(false);
   const [hasProfile, setHasProfile] = useState<boolean | null>(null);
+  const [debug, setDebug] = useState<SelectionDebug | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
+  const lastShownCardIdRef = useRef<string | null>(null);
 
   const loadCard = useCallback(
     async (crisis = false) => {
       if (!user) return;
       setLoading(true);
-      const c = await getDailyCard(isPremium, user.id, crisis);
-      setCard(c);
-      if (c) {
+      const result = await getDailyCard(isPremium, user.id, crisis, lastShownCardIdRef.current);
+      setCard(result.card);
+      setDebug(result.debug);
+      if (result.card) {
+        // Record "shown" delivery
+        await recordDelivery(user.id, result.card.id, "shown");
+        lastShownCardIdRef.current = result.card.id;
         // Check if favorited
         const { data: fav } = await supabase
           .from("favorites")
           .select("id")
           .eq("user_id", user.id)
-          .eq("card_id", c.id)
+          .eq("card_id", result.card.id)
           .maybeSingle();
         setIsFavorited(!!fav);
       }
@@ -49,7 +57,6 @@ const Home = () => {
 
   useEffect(() => {
     if (!user) return;
-    // Check profile + streak
     (async () => {
       const { data: profile } = await supabase
         .from("profiles")
@@ -90,7 +97,7 @@ const Home = () => {
       await toggleFavorite(user.id, card.id, isFavorited);
       setIsFavorited(!isFavorited);
       toast.success(isFavorited ? "Eliminat din favorite" : "Salvat în favorite ❤️");
-      return; // Don't load next card on save
+      return;
     }
     loadCard();
   };
@@ -117,12 +124,26 @@ const Home = () => {
           <h1 className="text-xl font-bold font-display text-foreground">MindShift</h1>
         </div>
         <div className="flex items-center gap-2">
+          <button onClick={() => setShowDebug((v) => !v)} className="p-1.5 rounded-full hover:bg-muted">
+            <Bug className="h-4 w-4 text-muted-foreground" />
+          </button>
           <div className="flex items-center gap-1 rounded-full bg-accent px-3 py-1.5">
             <Flame className="h-4 w-4 text-secondary" />
             <span className="text-sm font-bold text-accent-foreground">{streak}</span>
           </div>
         </div>
       </header>
+
+      {/* Debug Panel */}
+      {showDebug && debug && (
+        <div className="mx-5 mb-3 rounded-xl border border-muted bg-muted/50 p-3 text-xs font-mono space-y-1">
+          <p><span className="text-muted-foreground">Stage:</span> {debug.stage}</p>
+          <p><span className="text-muted-foreground">Candidates:</span> {debug.candidatesCount}</p>
+          <p><span className="text-muted-foreground">Excluded:</span> {debug.excludedCount}</p>
+          <p><span className="text-muted-foreground">Selected:</span> {debug.selectedCardId?.slice(0, 8) ?? "none"}</p>
+          <p><span className="text-muted-foreground">LastShown:</span> {debug.lastShownCardId?.slice(0, 8) ?? "none"}</p>
+        </div>
+      )}
 
       {/* Crisis Button */}
       <div className="px-5 py-3">
@@ -139,7 +160,6 @@ const Home = () => {
       <div className="flex-1 px-5">
         {card ? (
           <div className="animate-scale-in rounded-2xl bg-card card-shadow p-6 space-y-5">
-            {/* Badge */}
             <div className="flex items-center gap-2">
               <span
                 className={`rounded-full px-3 py-1 text-xs font-semibold ${
@@ -157,26 +177,22 @@ const Home = () => {
               </span>
             </div>
 
-            {/* Title */}
             <h2 className="text-xl font-bold font-display text-foreground leading-tight">
               {card.title}
             </h2>
 
-            {/* Key Idea */}
             {card.key_idea && (
               <p className="text-sm text-muted-foreground italic leading-relaxed">
                 {card.key_idea}
               </p>
             )}
 
-            {/* Explanation */}
             {card.explanation && (
               <p className="text-sm text-foreground/80 leading-relaxed">
                 {card.explanation}
               </p>
             )}
 
-            {/* Steps */}
             {steps.length > 0 && (
               <div className="space-y-3 rounded-xl bg-accent/50 p-4">
                 <p className="text-xs font-semibold uppercase tracking-wider text-accent-foreground">
@@ -195,37 +211,20 @@ const Home = () => {
               </div>
             )}
 
-            {/* Actions */}
             <div className="grid grid-cols-4 gap-2 pt-2">
-              <Button
-                onClick={() => handleAction("completed")}
-                variant="default"
-                className="flex-col gap-1 h-auto py-3 rounded-xl"
-              >
+              <Button onClick={() => handleAction("completed")} variant="default" className="flex-col gap-1 h-auto py-3 rounded-xl">
                 <Check className="h-5 w-5" />
                 <span className="text-[10px]">Aplică</span>
               </Button>
-              <Button
-                onClick={() => handleAction("saved")}
-                variant="outline"
-                className={`flex-col gap-1 h-auto py-3 rounded-xl ${isFavorited ? "border-crisis text-crisis" : ""}`}
-              >
+              <Button onClick={() => handleAction("saved")} variant="outline" className={`flex-col gap-1 h-auto py-3 rounded-xl ${isFavorited ? "border-crisis text-crisis" : ""}`}>
                 <Heart className={`h-5 w-5 ${isFavorited ? "fill-current" : ""}`} />
                 <span className="text-[10px]">Salvează</span>
               </Button>
-              <Button
-                onClick={() => handleAction("not_relevant")}
-                variant="outline"
-                className="flex-col gap-1 h-auto py-3 rounded-xl"
-              >
+              <Button onClick={() => handleAction("not_relevant")} variant="outline" className="flex-col gap-1 h-auto py-3 rounded-xl">
                 <X className="h-5 w-5" />
                 <span className="text-[10px]">Nu e pt mine</span>
               </Button>
-              <Button
-                onClick={() => handleAction("skipped")}
-                variant="outline"
-                className="flex-col gap-1 h-auto py-3 rounded-xl"
-              >
+              <Button onClick={() => handleAction("skipped")} variant="outline" className="flex-col gap-1 h-auto py-3 rounded-xl">
                 <SkipForward className="h-5 w-5" />
                 <span className="text-[10px]">Altul</span>
               </Button>

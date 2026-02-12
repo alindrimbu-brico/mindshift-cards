@@ -35,11 +35,11 @@ const MomentGreu = () => {
   const loadCrisisCard = async () => {
     if (!user) return;
     setLoading(true);
-    const c = await getDailyCard(isPremium, user.id, true);
-    setCard(c);
+    const result = await getDailyCard(isPremium, user.id, true);
+    setCard(result.card);
     setLoading(false);
-    if (c) {
-      setTimer(c.duration_seconds ?? 90);
+    if (result.card) {
+      setTimer(result.card.duration_seconds ?? 90);
       setTimerActive(true);
     }
   };
