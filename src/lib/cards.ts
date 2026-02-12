@@ -29,6 +29,11 @@ export function getCurrentTimeBlock(): "AM" | "PM" | "SEARA" {
   return "SEARA";
 }
 
+function getPreferredVariant(block: "AM" | "PM" | "SEARA"): string {
+  if (block === "AM") return "ACTION";
+  return "REFRAME";
+}
+
 export function parseExerciseSteps(json: string | null): string[] {
   if (!json) return [];
   try {
@@ -39,58 +44,68 @@ export function parseExerciseSteps(json: string | null): string[] {
   }
 }
 
+async function tryQuery(
+  filters: (q: any) => any,
+  label: string
+): Promise<Card | null> {
+  const q1 = filters(supabase.from("cards"));
+  const { count } = await q1.select("*", { count: "exact", head: true });
+  const total = count ?? 0;
+  console.log(`[getDailyCard] ${label}: ${total} cards`);
+  if (total === 0) return null;
+  const offset = Math.floor(Math.random() * total);
+  const q2 = filters(supabase.from("cards"));
+  const { data } = await q2.select("*").range(offset, offset).limit(1);
+  return (data?.[0] as Card) ?? null;
+}
+
 export async function getDailyCard(
-  isPremium: boolean,
+  _isPremium: boolean,
   userId: string,
   isCrisis = false
 ): Promise<Card | null> {
-  // Get cards shown in last 30 days
+  const block = getCurrentTimeBlock();
+  const variant = isCrisis ? "CRISIS" : getPreferredVariant(block);
+  const pack = isCrisis ? "CRISIS" : block;
+
+  // Soft 30-day repeat filter
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
   const { data: recentDeliveries } = await supabase
     .from("deliveries")
     .select("card_id")
     .eq("user_id", userId)
     .gte("delivered_at", thirtyDaysAgo.toISOString());
+  const recentIds = (recentDeliveries ?? []).map((d) => d.card_id);
 
-  const recentCardIds = (recentDeliveries ?? []).map((d) => d.card_id);
+  // Stage 1: pack + variant, exclude recent
+  let card = await tryQuery((q) => {
+    let r = q.eq("status", "published").eq("pack", pack).eq("card_variant", variant);
+    if (recentIds.length > 0) r = r.not("id", "in", `(${recentIds.join(",")})`);
+    return r;
+  }, `S1 pack=${pack} var=${variant} -recent`);
+  if (card) return card;
 
-  let query = supabase
-    .from("cards")
-    .select("*")
-    .eq("status", "published");
+  // Stage 2: pack + variant, allow recent
+  card = await tryQuery((q) =>
+    q.eq("status", "published").eq("pack", pack).eq("card_variant", variant),
+    `S2 pack=${pack} var=${variant}`);
+  if (card) return card;
 
-  if (isCrisis) {
-    query = query.eq("pack", "CRISIS").eq("card_variant", "CRISIS");
-  } else {
-    const block = getCurrentTimeBlock();
-    query = query.eq("pack", block);
-  }
+  // Stage 3: variant only
+  card = await tryQuery((q) =>
+    q.eq("status", "published").eq("card_variant", variant),
+    `S3 var=${variant}`);
+  if (card) return card;
 
-  if (!isPremium) {
-    query = query.eq("is_free_top300", true);
-  }
+  // Stage 4: any published
+  card = await tryQuery((q) =>
+    q.eq("status", "published"),
+    `S4 any published`);
+  if (card) return card;
 
-  if (recentCardIds.length > 0) {
-    query = query.not("id", "in", `(${recentCardIds.join(",")})`);
-  }
-
-  // Random card via offset
-  const { count } = await supabase
-    .from("cards")
-    .select("*", { count: "exact", head: true })
-    .eq("status", "published")
-    .eq(isCrisis ? "pack" : "pack", isCrisis ? "CRISIS" : getCurrentTimeBlock())
-    .eq(isPremium ? "status" : "is_free_top300", isPremium ? "published" : true as any);
-
-  const total = count ?? 0;
-  if (total === 0) return null;
-
-  const offset = Math.floor(Math.random() * Math.min(total, 50));
-  const { data } = await query.range(offset, offset).limit(1);
-
-  return (data?.[0] as Card) ?? null;
+  console.warn("[getDailyCard] No cards at any stage!");
+  return null;
 }
 
 export async function recordDelivery(userId: string, cardId: string, action: string) {
