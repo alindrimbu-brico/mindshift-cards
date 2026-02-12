@@ -155,11 +155,6 @@ const Home = () => {
               <span className="rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
                 {card.category}
               </span>
-              {!isPremium && card.is_free_top300 && (
-                <span className="rounded-full bg-success/10 px-2 py-1 text-xs text-success">
-                  Free
-                </span>
-              )}
             </div>
 
             {/* Title */}
@@ -238,16 +233,10 @@ const Home = () => {
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center rounded-2xl bg-card card-shadow p-8 text-center space-y-3">
+            <AlertTriangle className="h-8 w-8 text-secondary" />
             <p className="text-muted-foreground">
-              {isPremium
-                ? "Ai parcurs toate cardurile recente! Revino mâine."
-                : "Ai parcurs cardurile gratuite. Treci la Premium pentru acces complet!"}
+              Nu sunt carduri în baza de date. Importă CSV-ul din pagina <span className="font-semibold text-foreground">/import</span>.
             </p>
-            {!isPremium && (
-              <Button className="rounded-xl gradient-warm text-warning-foreground">
-                Activează Premium
-              </Button>
-            )}
           </div>
         )}
       </div>
