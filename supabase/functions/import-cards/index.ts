@@ -25,7 +25,6 @@ serve(async (req) => {
       });
     }
 
-    // Parse CSV
     const lines = csv_data.split("\n").filter((l: string) => l.trim());
     const headers = parseCSVLine(lines[0]);
     
@@ -54,8 +53,16 @@ serve(async (req) => {
             }
           });
 
-          // Don't include 'id' from CSV
           delete row["id"];
+
+          // Compute unique_key
+          const chNo = row["chapter_no"] != null ? String(row["chapter_no"]) : "X";
+          const cardNo = row["card_no_in_chapter"] != null ? String(row["card_no_in_chapter"]) : "X";
+          const variant = row["card_variant"] || "X";
+          row["unique_key"] = `${chNo}-${cardNo}-${variant}`;
+
+          // Default status
+          if (!row["status"]) row["status"] = "published";
           
           if (row.title) batch.push(row);
         } catch {
@@ -65,23 +72,18 @@ serve(async (req) => {
 
       if (batch.length > 0) {
         if (is_top300) {
-          // For top300, update existing cards to set is_free_top300 = true
           for (const card of batch) {
             const { error } = await supabase
               .from("cards")
               .update({ is_free_top300: true })
-              .eq("title", card.title)
-              .eq("chapter_no", card.chapter_no)
-              .eq("card_no_in_chapter", card.card_no_in_chapter)
-              .eq("card_variant", card.card_variant);
-
+              .eq("unique_key", card.unique_key);
             if (error) errors++;
             else inserted++;
           }
         } else {
-          const { error } = await supabase.from("cards").insert(batch);
+          const { error } = await supabase.from("cards").upsert(batch, { onConflict: "unique_key" });
           if (error) {
-            console.error("Batch insert error:", error);
+            console.error("Batch upsert error:", error);
             errors += batch.length;
           } else {
             inserted += batch.length;
